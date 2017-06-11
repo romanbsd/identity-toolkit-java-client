@@ -57,6 +57,7 @@ public class RpcHelper {
   private final RsaSHA256Signer signer;
   private final String gitkitApiUrl;
   private final HttpSender httpSender;
+  private AccessToken accessToken;
 
   public RpcHelper(HttpSender httpSender, String gitkitApiUrl, String serviceAccountEmail,
       InputStream keyStream) {
@@ -257,14 +258,22 @@ public class RpcHelper {
   }
 
   @VisibleForTesting
-  String getAccessToken() throws GeneralSecurityException, IOException, JSONException {
+  String getAccessToken() throws GeneralSecurityException, IOException, JSONException, GitkitServerException {
+    if (accessToken != null && accessToken.isValid()) {
+      return accessToken.toString();
+    }
     String assertion = signServiceAccountRequest();
     String data = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion="
         + assertion;
     Map<String, String> headers = Maps.newHashMap();
     headers.put("Content-Type", "application/x-www-form-urlencoded");
     String response = httpSender.post(TOKEN_SERVER, data, headers);
-    return new JSONObject(response).getString("access_token");
+    JSONObject o = new JSONObject(response);
+    if (o.optString("error", null) != null) {
+      throw new GitkitServerException(o.getString("error_description"));
+    }
+    accessToken = new AccessToken(o);
+    return accessToken.toString();
   }
 
   @VisibleForTesting
@@ -370,5 +379,25 @@ public class RpcHelper {
       log.log(Level.WARNING, "Server response exception: " + e.getMessage(), e);
     }
     throw new GitkitServerException("null error code from Gitkit server");
+  }
+
+  private static class AccessToken {
+    final String token;
+    final long expiresAt;
+
+    AccessToken(JSONObject o) {
+      token = o.getString("access_token");
+      int expiresIn = o.optInt("expires_in", 0);
+      expiresAt = System.currentTimeMillis() + expiresIn * 1000;
+    }
+
+    boolean isValid() {
+      return System.currentTimeMillis() < expiresAt;
+    }
+
+    @Override
+    public String toString() {
+      return token;
+    }
   }
 }
